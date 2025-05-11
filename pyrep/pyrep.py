@@ -36,24 +36,27 @@ class PyRep(object):
 
         self._handles_to_objects = {}
 
-        if 'COPPELIASIM_ROOT' not in os.environ:
+        if "COPPELIASIM_ROOT" not in os.environ:
             raise PyRepError(
-                'COPPELIASIM_ROOT not defined. See installation instructions.')
-        self._vrep_root = os.environ['COPPELIASIM_ROOT']
+                "COPPELIASIM_ROOT not defined. See installation instructions."
+            )
+        self._vrep_root = os.environ["COPPELIASIM_ROOT"]
         if not os.path.exists(self._vrep_root):
             raise PyRepError(
-                'COPPELIASIM_ROOT was not a correct path. '
-                'See installation instructions')
+                "COPPELIASIM_ROOT was not a correct path. "
+                "See installation instructions"
+            )
 
-    def _run_ui_thread(self, scene_file: str, headless: bool,
-                       verbosity: Verbosity) -> None:
+    def _run_ui_thread(
+        self, scene_file: str, headless: bool, verbosity: Verbosity
+    ) -> None:
         # Need this otherwise extensions will not be loaded
         os.chdir(self._vrep_root)
         options = sim.sim_gui_headless if headless else sim.sim_gui_all
-        sim.simSetStringParameter(
-            sim.sim_stringparam_verbosity, verbosity.value)
+        sim.simSetStringParameter(sim.sim_stringparam_verbosity, verbosity.value)
         sim.simExtLaunchUIThread(
-            options=options, scene=scene_file, pyrep_root=self._vrep_root)
+            options=options, scene=scene_file, pyrep_root=self._vrep_root
+        )
 
     def _run_responsive_ui_thread(self) -> None:
         while True:
@@ -68,9 +71,14 @@ class PyRep(object):
         if not self._shutting_down:
             self.shutdown()
 
-    def launch(self, scene_file: str = "", headless: bool = False,
-               responsive_ui: bool = False, blocking: bool = False,
-               verbosity: Verbosity = Verbosity.NONE) -> None:
+    def launch(
+        self,
+        scene_file: str = "",
+        headless: bool = False,
+        responsive_ui: bool = False,
+        blocking: bool = False,
+        verbosity: Verbosity = Verbosity.NONE,
+    ) -> None:
         """Launches CoppeliaSim.
 
         Launches the UI thread, waits until the UI thread has finished, this
@@ -89,11 +97,24 @@ class PyRep(object):
         """
         abs_scene_file = os.path.abspath(scene_file)
         if len(scene_file) > 0 and not os.path.isfile(abs_scene_file):
-            raise PyRepError('Scene file does not exist: %s' % scene_file)
+            # === PYREP_LAUNCH_DEBUG 0 ===
+            print(
+                f"PYREP_LAUNCH_DEBUG: ERROR - Scene file does NOT exist: {abs_scene_file}"
+            )
+            raise PyRepError("Scene file does not exist: %s" % scene_file)
+
+        # === PYREP_LAUNCH_DEBUG 1 ===
+        print(
+            f"PYREP_LAUNCH_DEBUG: Attempting to launch CoppeliaSim with scene: {abs_scene_file}"
+        )
+        print(
+            f"PYREP_LAUNCH_DEBUG: Headless: {headless}, Responsive UI: {responsive_ui}, Blocking: {blocking}, Verbosity: {verbosity.name}"
+        )
+
         cwd = os.getcwd()
         self._ui_thread = threading.Thread(
-            target=self._run_ui_thread,
-            args=(abs_scene_file, headless, verbosity))
+            target=self._run_ui_thread, args=(abs_scene_file, headless, verbosity)
+        )
         self._ui_thread.daemon = True
         self._ui_thread.start()
 
@@ -103,13 +124,55 @@ class PyRep(object):
         sim.simExtSimThreadInit()
         time.sleep(0.2)  # Stops CoppeliaSim crashing if restarted too quickly.
 
+        # === PYREP_LAUNCH_DEBUG 2: After simExtSimThreadInit ===
+        print(
+            f"PYREP_LAUNCH_DEBUG: simExtSimThreadInit completed. Scene '{abs_scene_file}' should be loaded."
+        )
+        print(f"PYREP_LAUNCH_DEBUG: Attempting to list objects in the scene NOW...")
+        try:
+            object_count_ptr = sim.ffi.new("int*")
+            handles_ptr = sim.lib.simGetObjectsInTree(
+                sim.sim_handle_scene, ObjectType.ALL.value, 0, object_count_ptr
+            )  # Use ObjectType.ALL.value
+
+            object_names = []
+            if handles_ptr != sim.ffi.NULL and object_count_ptr[0] > 0:
+                num_objects = object_count_ptr[0]
+                print(f"PYREP_LAUNCH_DEBUG: Found {num_objects} object handles.")
+                for i in range(num_objects):
+                    handle_val = handles_ptr[i]
+                    name_ptr = sim.lib.simGetObjectName(handle_val)
+                    if name_ptr != sim.ffi.NULL:
+                        try:
+                            obj_name_str = sim.ffi.string(name_ptr).decode("utf-8")
+                            object_names.append(
+                                f"{obj_name_str} (handle: {handle_val})"
+                            )
+                        finally:
+                            sim.lib.simReleaseBuffer(name_ptr)
+                sim.lib.simReleaseBuffer(sim.ffi.cast("char *", handles_ptr))
+            else:
+                print(
+                    f"PYREP_LAUNCH_DEBUG: simGetObjectsInTree returned no objects or an error (count: {object_count_ptr[0]}). Scene might be empty or not loaded."
+                )
+
+            print(
+                f"PYREP_LAUNCH_DEBUG: Objects in scene immediately after launch: {sorted(list(set(object_names)))}"
+            )
+        except Exception as list_e:
+            print(
+                f"PYREP_LAUNCH_DEBUG: Error encountered while trying to list objects after launch: {list_e}"
+            )
+        # === END PYREP_LAUNCH_DEBUG 2 ===
+
         if blocking:
             while not sim.simExtGetExitRequest():
                 sim.simExtStep()
             self.shutdown()
         elif responsive_ui:
             self._responsive_ui_thread = threading.Thread(
-                target=self._run_responsive_ui_thread)
+                target=self._run_responsive_ui_thread
+            )
             self._responsive_ui_thread.daemon = True
             try:
                 self._responsive_ui_thread.start()
@@ -120,12 +183,20 @@ class PyRep(object):
             self.step()
         else:
             self.step()
+            print(
+                f"PYREP_LAUNCH_DEBUG: After first self.step(). Current scene: {sim.simGetStringParameter(sim.sim_stringparam_scene_filename) if sim.simGetStringParameter else 'N/A'}"
+            )
         os.chdir(cwd)  # Go back to the previous cwd
 
-    def script_call(self, function_name_at_script_name: str,
-                    script_handle_or_type: int,
-                    ints=(), floats=(), strings=(), bytes='') -> (
-            Tuple[List[int], List[float], List[str], str]):
+    def script_call(
+        self,
+        function_name_at_script_name: str,
+        script_handle_or_type: int,
+        ints=(),
+        floats=(),
+        strings=(),
+        bytes="",
+    ) -> Tuple[List[int], List[float], List[str], str]:
         """Calls a script function (from a plugin, the main client application,
         or from another script). This represents a callback inside of a script.
 
@@ -142,15 +213,18 @@ class PyRep(object):
         :return: Any number of return values from the called Lua function.
         """
         return utils.script_call(
-            function_name_at_script_name, script_handle_or_type, ints, floats,
-            strings, bytes)
+            function_name_at_script_name,
+            script_handle_or_type,
+            ints,
+            floats,
+            strings,
+            bytes,
+        )
 
     def shutdown(self) -> None:
-        """Shuts down the CoppeliaSim simulation.
-        """
+        """Shuts down the CoppeliaSim simulation."""
         if self._ui_thread is None:
-            raise PyRepError(
-                'CoppeliaSim has not been launched. Call launch first.')
+            raise PyRepError("CoppeliaSim has not been launched. Call launch first.")
         if self._ui_thread is not None:
             self._shutting_down = True
             self.stop()
@@ -167,21 +241,17 @@ class PyRep(object):
         self._shutting_down = False
 
     def start(self) -> None:
-        """Starts the physics simulation if it is not already running.
-        """
+        """Starts the physics simulation if it is not already running."""
         if self._ui_thread is None:
-            raise PyRepError(
-                'CoppeliaSim has not been launched. Call launch first.')
+            raise PyRepError("CoppeliaSim has not been launched. Call launch first.")
         if not self.running:
             sim.simStartSimulation()
             self.running = True
 
     def stop(self) -> None:
-        """Stops the physics simulation if it is running.
-        """
+        """Stops the physics simulation if it is running."""
         if self._ui_thread is None:
-            raise PyRepError(
-                'CoppeliaSim has not been launched. Call launch first.')
+            raise PyRepError("CoppeliaSim has not been launched. Call launch first.")
         if self.running:
             sim.simStopSimulation()
             self.running = False
@@ -214,9 +284,11 @@ class PyRep(object):
         """
         sim.simSetFloatParameter(sim.sim_floatparam_simulation_time_step, dt)
         if not np.allclose(self.get_simulation_timestep(), dt):
-            warnings.warn('Could not change simulation timestep. You may need '
-                          'to change it to "custom dt" using simulation '
-                          'settings dialog.')
+            warnings.warn(
+                "Could not change simulation timestep. You may need "
+                'to change it to "custom dt" using simulation '
+                "settings dialog."
+            )
 
     def get_simulation_timestep(self) -> float:
         """Gets the simulation time step.
@@ -271,7 +343,7 @@ class PyRep(object):
         sim.simSaveScene(filename)
 
     def import_model(self, filename: str) -> Object:
-        """	Loads a previously saved model.
+        """Loads a previously saved model.
 
         :param filename: model filename. The filename extension is required
             ("ttm"). An optional "@copy" can be appended to the filename, in
@@ -282,9 +354,14 @@ class PyRep(object):
         handle = sim.simLoadModel(filename)
         return utils.to_type(handle)
 
-    def create_texture(self, filename: str, interpolate=True, decal_mode=False,
-                       repeat_along_u=False, repeat_along_v=False
-                       ) -> Tuple[Shape, Texture]:
+    def create_texture(
+        self,
+        filename: str,
+        interpolate=True,
+        decal_mode=False,
+        repeat_along_u=False,
+        repeat_along_v=False,
+    ) -> Tuple[Shape, Texture]:
         """Creates a planar shape that is textured.
 
         :param filename: Path to the texture to load.
@@ -308,8 +385,7 @@ class PyRep(object):
         s = Shape(handle)
         return s, s.get_texture()
 
-    def get_objects_in_tree(self, root_object=None, *args, **kwargs
-                            ) -> List[Object]:
+    def get_objects_in_tree(self, root_object=None, *args, **kwargs) -> List[Object]:
         """Retrieves the objects in a given hierarchy tree.
 
         :param root_object: The root object in the tree. Pass None to retrieve
