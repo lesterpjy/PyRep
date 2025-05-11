@@ -1,18 +1,23 @@
 import numpy as np
 from contextlib import contextmanager
 from pyrep.backend import sim, utils
-from pyrep.const import Verbosity
+from pyrep.const import Verbosity, ObjectType
 from pyrep.objects.object import Object
 from pyrep.objects.shape import Shape
 from pyrep.textures.texture import Texture
 from pyrep.errors import PyRepError
 from pyrep.backend import sim
+from pyrep.backend.simConst import (
+    sim_stringparam_verbosity,
+    sim_stringparam_scene_path_and_name,
+)
 import os
 import sys
 import time
 import threading
 from typing import Tuple, List
 import warnings
+import traceback
 
 
 class PyRep(object):
@@ -47,15 +52,31 @@ class PyRep(object):
                 "See installation instructions"
             )
 
+    # def _run_ui_thread(
+    #     self, scene_file: str, headless: bool, verbosity: Verbosity
+    # ) -> None:
+    #     # Need this otherwise extensions will not be loaded
+    #     os.chdir(self._vrep_root)
+    #     options = sim.sim_gui_headless if headless else sim.sim_gui_all
+    #     sim.simSetStringParameter(sim.sim_stringparam_verbosity, verbosity.value)
+    #     sim.simExtLaunchUIThread(
+    #         options=options, scene=scene_file, pyrep_root=self._vrep_root
+    #     )
+
     def _run_ui_thread(
         self, scene_file: str, headless: bool, verbosity: Verbosity
     ) -> None:
-        # Need this otherwise extensions will not be loaded
         os.chdir(self._vrep_root)
         options = sim.sim_gui_headless if headless else sim.sim_gui_all
-        sim.simSetStringParameter(sim.sim_stringparam_verbosity, verbosity.value)
-        sim.simExtLaunchUIThread(
-            options=options, scene=scene_file, pyrep_root=self._vrep_root
+        # Use the imported constant for verbosity
+        sim.lib.simSetStringParameter(  # Use sim.lib for direct C API calls
+            sim_stringparam_verbosity, verbosity.value.encode("ascii")
+        )  # Pass as bytes
+        sim.lib.simExtLaunchUIThread(  # Use sim.lib
+            "PyRep".encode("ascii"),
+            options,
+            scene_file.encode("ascii"),
+            self._vrep_root.encode("ascii"),
         )
 
     def _run_responsive_ui_thread(self) -> None:
@@ -79,31 +100,13 @@ class PyRep(object):
         blocking: bool = False,
         verbosity: Verbosity = Verbosity.NONE,
     ) -> None:
-        """Launches CoppeliaSim.
-
-        Launches the UI thread, waits until the UI thread has finished, this
-        results in the current thread becoming the simulation thread.
-
-        :param scene_file: The scene file to load. Empty string for empty scene.
-        :param headless: Run CoppeliaSim in simulation mode.
-        :param responsive_ui: If True, then a separate thread will be created to
-            asynchronously step the UI of CoppeliaSim. Note, that will reduce
-            the responsiveness of the simulation thread.
-        :param blocking: Causes CoppeliaSim to launch as if running the default
-            c++ client application. This is causes the function to block.
-            For most users, this will be set to False.
-        :param verbosity: The verbosity level for CoppeliaSim.
-            Usually Verbosity.NONE or Verbosity.LOAD_INFOS.
-        """
         abs_scene_file = os.path.abspath(scene_file)
         if len(scene_file) > 0 and not os.path.isfile(abs_scene_file):
-            # === PYREP_LAUNCH_DEBUG 0 ===
             print(
                 f"PYREP_LAUNCH_DEBUG: ERROR - Scene file does NOT exist: {abs_scene_file}"
             )
             raise PyRepError("Scene file does not exist: %s" % scene_file)
 
-        # === PYREP_LAUNCH_DEBUG 1 ===
         print(
             f"PYREP_LAUNCH_DEBUG: Attempting to launch CoppeliaSim with scene: {abs_scene_file}"
         )
@@ -118,22 +121,22 @@ class PyRep(object):
         self._ui_thread.daemon = True
         self._ui_thread.start()
 
-        while not sim.simExtCanInitSimThread():
+        while not sim.lib.simExtCanInitSimThread():  # Use sim.lib
             time.sleep(0.1)
 
-        sim.simExtSimThreadInit()
-        time.sleep(0.2)  # Stops CoppeliaSim crashing if restarted too quickly.
+        sim.lib.simExtSimThreadInit()  # Use sim.lib
+        time.sleep(0.2)
 
-        # === PYREP_LAUNCH_DEBUG 2: After simExtSimThreadInit ===
         print(
             f"PYREP_LAUNCH_DEBUG: simExtSimThreadInit completed. Scene '{abs_scene_file}' should be loaded."
         )
         print(f"PYREP_LAUNCH_DEBUG: Attempting to list objects in the scene NOW...")
         try:
             object_count_ptr = sim.ffi.new("int*")
+            # Call the C API function directly via sim.lib
             handles_ptr = sim.lib.simGetObjectsInTree(
                 sim.sim_handle_scene, ObjectType.ALL.value, 0, object_count_ptr
-            )  # Use ObjectType.ALL.value
+            )
 
             object_names = []
             if handles_ptr != sim.ffi.NULL and object_count_ptr[0] > 0:
@@ -161,15 +164,16 @@ class PyRep(object):
             )
         except Exception as list_e:
             print(
-                f"PYREP_LAUNCH_DEBUG: Error encountered while trying to list objects after launch: {list_e}"
+                f"PYREP_LAUNCH_DEBUG: Error encountered while trying to list objects after launch: {type(list_e).__name__} - {list_e}"
             )
-        # === END PYREP_LAUNCH_DEBUG 2 ===
+            traceback.print_exc()
 
         if blocking:
-            while not sim.simExtGetExitRequest():
-                sim.simExtStep()
+            while not sim.lib.simExtGetExitRequest():  # Use sim.lib
+                sim.lib.simExtStep(True)  # Use sim.lib, pass True or False
             self.shutdown()
         elif responsive_ui:
+            # ... (responsive_ui logic, ensure sim.lib calls if needed) ...
             self._responsive_ui_thread = threading.Thread(
                 target=self._run_responsive_ui_thread
             )
@@ -180,13 +184,33 @@ class PyRep(object):
                 if not self._shutting_down:
                     self.shutdown()
                 sys.exit()
-            self.step()
+            self.step()  # Initial step
         else:
-            self.step()
-            print(
-                f"PYREP_LAUNCH_DEBUG: After first self.step(). Current scene: {sim.simGetStringParameter(sim.sim_stringparam_scene_filename) if sim.simGetStringParameter else 'N/A'}"
-            )
-        os.chdir(cwd)  # Go back to the previous cwd
+            self.step()  # Initial step
+
+        if not blocking:
+            try:
+                # Use the correct constant sim_stringparam_scene_path_and_name
+                current_scene_name_ptr = sim.lib.simGetStringParameter(
+                    sim_stringparam_scene_path_and_name
+                )
+                if current_scene_name_ptr != sim.ffi.NULL:
+                    current_scene_name = sim.ffi.string(current_scene_name_ptr).decode(
+                        "utf-8"
+                    )
+                    sim.lib.simReleaseBuffer(current_scene_name_ptr)
+                    print(
+                        f"PYREP_LAUNCH_DEBUG: After first main logic step(s). Current scene: {current_scene_name}"
+                    )
+                else:
+                    print(
+                        f"PYREP_LAUNCH_DEBUG: After first main logic step(s). Current scene: (simGetStringParameter returned NULL for scene_path_and_name)"
+                    )
+            except Exception as e_scene_name:
+                print(
+                    f"PYREP_LAUNCH_DEBUG: After first main logic step(s). Error getting scene name: {e_scene_name}"
+                )
+        os.chdir(cwd)
 
     def script_call(
         self,
