@@ -10,7 +10,9 @@ from pyrep.backend import sim
 from pyrep.backend.simConst import (
     sim_stringparam_verbosity,
     sim_stringparam_scene_path_and_name,
+    sim_verbosity_traceall,
 )
+
 import os
 import sys
 import time
@@ -68,10 +70,14 @@ class PyRep(object):
     ) -> None:
         os.chdir(self._vrep_root)
         options = sim.sim_gui_headless if headless else sim.sim_gui_all
-        # Use the imported constant for verbosity
-        sim.lib.simSetStringParameter(  # Use sim.lib for direct C API calls
-            sim_stringparam_verbosity, verbosity.value.encode("ascii")
-        )  # Pass as bytes
+        # --- FORCE MAXIMUM VERBOSITY FOR DEBUGGING SCENE LOAD ---
+        print(
+            f"PYREP_LAUNCH_DEBUG: Forcing CoppeliaSim verbosity to TRACEALL ({sim_verbosity_traceall})"
+        )
+        sim.lib.simSetStringParameter(
+            sim_stringparam_verbosity, str(sim_verbosity_traceall).encode("ascii")
+        )  # Force highest
+        # --- END FORCE VERBOSITY ---
         sim.lib.simExtLaunchUIThread(  # Use sim.lib
             "PyRep".encode("ascii"),
             options,
