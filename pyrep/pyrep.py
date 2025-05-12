@@ -137,7 +137,24 @@ class PyRep(object):
 
         sim.lib.simExtSimThreadInit()  # Use sim.lib
         time.sleep(0.2)
-        print(f"PYREP_LAUNCH_DEBUG: simExtSimThreadInit completed.")
+
+        # === NEW: Perform a preliminary step to ensure scene is "active" ===
+        print(f"PYREP_LAUNCH_DEBUG: Before preliminary step().")
+        try:
+            with utils.step_lock:  # Use the same lock as self.step()
+                sim.lib.simExtStep(
+                    True
+                )  # True to advance simulation if running (it's not yet)
+            print(f"PYREP_LAUNCH_DEBUG: Preliminary step() completed.")
+            time.sleep(0.1)  # Another small pause
+        except Exception as e_prelim_step:
+            print(f"PYREP_LAUNCH_DEBUG: ERROR during preliminary step: {e_prelim_step}")
+        # === END NEW ===
+
+        print(
+            f"PYREP_LAUNCH_DEBUG: simExtSimThreadInit completed (and preliminary step done). Scene '{abs_scene_file}' should be loaded."
+        )
+
         print(
             f"PYREP_LAUNCH_DEBUG: simExtSimThreadInit completed. Scene '{abs_scene_file}' should be loaded."
         )
