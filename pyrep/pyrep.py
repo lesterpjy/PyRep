@@ -103,17 +103,22 @@ class PyRep(object):
         abs_scene_file = os.path.abspath(scene_file)
         if len(scene_file) > 0 and not os.path.isfile(abs_scene_file):
             print(
-                f"PYREP_LAUNCH_DEBUG: ERROR - Scene file does NOT exist: {abs_scene_file}"
-            )
+                f"PYREP_LAUNCH_DEBUG: ERROR - Scene file specified BUT DOES NOT EXIST: {abs_scene_file}"
+            )  # More explicit
             raise PyRepError("Scene file does not exist: %s" % scene_file)
+        elif len(scene_file) == 0:
+            print(
+                f"PYREP_LAUNCH_DEBUG: No scene file specified, launching with empty scene."
+            )
+            abs_scene_file = ""  # Ensure empty string if none provided
+        else:
+            print(
+                f"PYREP_LAUNCH_DEBUG: Scene file specified and found: {abs_scene_file}"
+            )
 
         print(
-            f"PYREP_LAUNCH_DEBUG: Attempting to launch CoppeliaSim with scene: {abs_scene_file}"
+            f"PYREP_LAUNCH_DEBUG: Calling simExtLaunchUIThread with scene: '{abs_scene_file}'"
         )
-        print(
-            f"PYREP_LAUNCH_DEBUG: Headless: {headless}, Responsive UI: {responsive_ui}, Blocking: {blocking}, Verbosity: {verbosity.name}"
-        )
-
         cwd = os.getcwd()
         self._ui_thread = threading.Thread(
             target=self._run_ui_thread, args=(abs_scene_file, headless, verbosity)
@@ -126,11 +131,41 @@ class PyRep(object):
 
         sim.lib.simExtSimThreadInit()  # Use sim.lib
         time.sleep(0.2)
-
+        print(f"PYREP_LAUNCH_DEBUG: simExtSimThreadInit completed.")
         print(
             f"PYREP_LAUNCH_DEBUG: simExtSimThreadInit completed. Scene '{abs_scene_file}' should be loaded."
         )
         print(f"PYREP_LAUNCH_DEBUG: Attempting to list objects in the scene NOW...")
+        # Try to get the scene name that CoppeliaSim *thinks* is loaded
+        try:
+            loaded_scene_name_ptr = sim.lib.simGetStringParameter(
+                sim_stringparam_scene_path_and_name
+            )
+            if loaded_scene_name_ptr != sim.ffi.NULL:
+                loaded_scene_name = sim.ffi.string(loaded_scene_name_ptr).decode(
+                    "utf-8"
+                )
+                print(
+                    f"PYREP_LAUNCH_DEBUG: CoppeliaSim reports current scene as: '{loaded_scene_name}'"
+                )
+                sim.lib.simReleaseBuffer(loaded_scene_name_ptr)
+                if abs_scene_file and loaded_scene_name != abs_scene_file:
+                    print(
+                        f"PYREP_LAUNCH_DEBUG: WARNING! Scene mismatch. Requested: '{abs_scene_file}', CoppeliaSim loaded: '{loaded_scene_name}'"
+                    )
+            else:
+                print(
+                    f"PYREP_LAUNCH_DEBUG: CoppeliaSim reports NO current scene name (simGetStringParameter returned NULL)."
+                )
+        except Exception as e_scene_name_early:
+            print(
+                f"PYREP_LAUNCH_DEBUG: Error getting scene name immediately after simExtSimThreadInit: {e_scene_name_early}"
+            )
+
+        print(
+            f"PYREP_LAUNCH_DEBUG: Attempting to list objects in the scene NOW (immediately after simExtSimThreadInit)..."
+        )
+
         try:
             object_count_ptr = sim.ffi.new("int*")
             # Call the C API function directly via sim.lib
